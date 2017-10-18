@@ -1,0 +1,163 @@
+#!/usr/bin/env python
+
+#from curses.ascii import isprint
+import re
+import sys
+
+import sh
+
+# TODO:
+#
+# either find a stack plan for the 1.12 family, or remove some parts,
+# such as the Builder that we don't need? But then we would need to
+# tweal the cabal conf file to remove some deps .... oh ffs.
+# 
+# Simply fetch Definition.hs and buid manually ? But, then fuck,
+# how is that mess integrated with stack ghci?
+
+# ------------------------------------------------------------------------------
+
+
+sh.cd("pandoc-types")
+
+# Stack
+# ------------------------------------------------------------------------------
+
+STACK_YAML = \
+"""
+packages:
+- '.'
+resolver: lts-7.2
+extra-deps:
+- aeson-0.6.2.1
+- syb-0.4.4
+"""
+
+# Install GHCI script
+# ------------------------------------------------------------------------------
+
+GHCI_SCRIPT = '''\
+import Data.Map (Map)
+:load Text.Pandoc.Definition
+putStrLn ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+:browse Text.Pandoc.Definition
+putStrLn "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+'''
+
+script = open(".ghci", "w")
+script.write(GHCI_SCRIPT)
+script.close()
+sh.chmod("go-w", "../pandoc-types")
+sh.chmod("go-w", ".ghci")
+
+# ------------------------------------------------------------------------------
+
+tags = sh.git("tag").split()
+
+def version_key(string):
+    return map(int, string.split("."))
+
+tags.sort(key=version_key)
+
+# TODO: single-tag from sys.argv
+if len(sys.argv) == 2:
+    if sys.argv[1] in tags:
+        tags = [sys.argv[1]]
+    else:
+        print "error: unknown version {0}".format(tag)
+        sys.exit(1)
+
+stack_not_found = False
+
+sh.rm("-rf", "stack.yaml")
+sh.git("checkout", ".")
+
+for tag in tags:
+
+    # cleanup
+    if stack_not_found:
+        sh.rm("-rf", "stack.yaml") 
+        stack_not_found = False
+    sh.git("checkout", ".")
+
+    print 80*"-"
+
+    sh.git("checkout", tag)
+
+    try:
+        stack_not_found = False
+        sh.ls("stack.yaml")
+        print "{0}: found stack.yaml file".format(tag)
+    except:
+        stack_not_found = True
+        print "{0}: no stack.yaml file found".format(tag)
+        sh.stack("init", "--solver")
+#        stack_file = open("stack.yaml", "w")
+#        stack_file.write(STACK_YAML)
+#        stack_file.close()
+
+    builder_src = str(sh.cat("Text/Pandoc/Builder.hs"))
+    builder_src = """
+      {-# LANGUAGE TypeSynonymInstances, FlexibleInstances,  
+      MultiParamTypeClasses,
+      DeriveDataTypeable, GeneralizedNewtypeDeriving, CPP, StandaloneDeriving,
+      DeriveGeneric, DeriveTraversable, AllowAmbiguousTypes #-}
+      """ + \
+      builder_src
+
+#    if "FlexibleInstances" not in builder_src:
+#        print "didn't find flexible instances"
+#        lines = builder_src.split("\n")
+#        lines[0] = "{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}"
+#        builder_src = "\n".join(lines)
+
+    fragment = "(<>) :: Monoid a => a -> a -> a\n(<>) = mappend"
+    builder_src = builder_src.replace(fragment, "")
+
+
+#    builder_src = "{-# LANGUAGE AllowAmbiguousTypes #-}\n" + builder_src 
+
+    b = open("Text/Pandoc/Builder.hs", "w")
+    b.write(builder_src)
+    b.close()
+
+    try:
+        print "setting up stack ..."
+        for line in sh.stack("setup", _iter=True, _err_to_out=True):
+            print "   ", line,
+        print "building ..."
+        for line in sh.stack("build", _iter=True, _err_to_out=True):
+            print "   ", line,
+    except Exception as error:
+        message = error.stdout
+        for line in message.splitlines():
+            print >> sys.stderr, "    ", line
+        # TODO: print error to file (.error instead of .hs)
+        # this filter here is not good enough
+        ansi_escape = re.compile(r'\x1b[^m]*m')
+        message = ansi_escape.sub('', message)
+        #message = "".join(char for char in message if isprint(char))
+        open("../definitions/{0}.error".format(tag), "w").write(message)
+        continue
+
+    print "running GHCI script ..."
+    collect = False
+    output = []
+    for line in sh.stack("ghci", _iter=True):
+        if line.startswith(">>>>>>>>>>"):
+            collect = True
+        elif line.startswith("<<<<<<<<<<"):
+            collect = False
+            break
+        elif collect == True:
+            output.append(line)
+    output = "".join(output)
+    output_file = open("../definitions/{0}.hs".format(tag), "w")
+    output_file.write(output)
+    output_file.close()
+  
+
+
+sh.cd("..")
+
+
