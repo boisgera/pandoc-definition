@@ -62,12 +62,15 @@ def setup():
 def main():
     sh.cd("pandoc-types")
 
+    # get the version tags, write the (ordered) list down
     tags = sh.git("tag").split()
-
     def version_key(string):
         return map(int, string.split("."))
-
     tags.sort(key=version_key)
+    versions_file = open("../definitions/versions", "w")
+    for tag in tags:
+      print >> versions_file, tag
+    versions_file.close()
 
     # TODO: single-tag from sys.argv
     if len(sys.argv) == 2:
@@ -173,3 +176,4 @@ def main():
 if __name__ == "__main__":
     setup()
     main()
+
